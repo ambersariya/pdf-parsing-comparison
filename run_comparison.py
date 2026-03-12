@@ -674,6 +674,96 @@ document.querySelectorAll('#results th').forEach((th, col) => {{
 
 
 # ---------------------------------------------------------------------------
+# Final cross-PDF summary matrix
+# ---------------------------------------------------------------------------
+
+def print_final_matrix(all_runs: list[tuple[Path, list[dict]]]) -> None:
+    """
+    Print a parsers × PDFs matrix summarising every run.
+
+    Rows  = libraries
+    Cols  = PDF files (one column each)
+    Cell  = status + wall time + peak memory (compact)
+
+    Also appends two aggregate columns when more than one PDF was processed:
+      Avg Wall  — mean elapsed time across successful runs
+      Avg Mem   — mean peak RSS across successful runs
+    """
+    if not all_runs:
+        return
+
+    # Preserve library order from the first run
+    libs = [m["library"] for m in all_runs[0][1]]
+
+    # Build a (pdf_name → display_label) list, deduplicating by stem if needed
+    pdf_labels: list[str] = []
+    for pdf_path, _ in all_runs:
+        label = pdf_path.name
+        if len(label) > 22:
+            label = label[:19] + "…"
+        pdf_labels.append(label)
+
+    # Index: (pdf_label, library) → meta dict
+    index: dict[tuple[str, str], dict] = {}
+    for (pdf_path, metas), label in zip(all_runs, pdf_labels):
+        for m in metas:
+            index[(label, m["library"])] = m
+
+    multi = len(all_runs) > 1
+
+    console.print()
+    console.print(Rule("[bold]Final Summary Matrix[/]", style="bright_blue"))
+
+    t = Table(box=box.ROUNDED, show_header=True, header_style="bold", padding=(0, 1))
+    t.add_column("Library", style="bold cyan", min_width=12, no_wrap=True)
+    for label in pdf_labels:
+        t.add_column(label, justify="center", min_width=16, no_wrap=False)
+    if multi:
+        t.add_column("Avg Wall", justify="right", style="white",  min_width=8)
+        t.add_column("Avg Mem",  justify="right", style="dim",    min_width=8)
+
+    for lib in libs:
+        row: list[str] = [lib]
+        wall_times: list[float] = []
+        mem_values: list[float] = []
+
+        for label in pdf_labels:
+            m = index.get((label, lib))
+            if m is None:
+                row.append("[dim]—[/]")
+                continue
+
+            s = m.get("status")
+            elapsed = m.get("elapsed_seconds")
+            mem     = m.get("peak_rss_mb")
+
+            if s == "ok":
+                cell = f"[green]OK[/]  [white]{elapsed:.1f}s[/]"
+                if mem is not None:
+                    cell += f"\n[dim]{mem:.0f} MB[/]"
+                    mem_values.append(mem)
+                if elapsed is not None:
+                    wall_times.append(elapsed)
+            elif s == "timeout":
+                cell = f"[yellow]TIMEOUT[/]\n[dim]{elapsed:.0f}s[/]" if elapsed else "[yellow]TIMEOUT[/]"
+            elif s == "error":
+                cell = f"[red]FAILED[/]  rc={m.get('returncode', '?')}"
+            else:
+                cell = "[red]EXCEPTION[/]"
+
+            row.append(cell)
+
+        if multi:
+            row.append(f"{sum(wall_times)/len(wall_times):.1f}s" if wall_times else "—")
+            row.append(f"{sum(mem_values)/len(mem_values):.0f} MB" if mem_values else "—")
+
+        t.add_row(*row)
+
+    console.print(t)
+    console.print()
+
+
+# ---------------------------------------------------------------------------
 # Baseline comparison
 # ---------------------------------------------------------------------------
 
@@ -776,6 +866,8 @@ def main() -> None:
 
     console.print(f"\nFound [bold]{len(pdf_paths)}[/] PDF(s) to process.\n")
 
+    all_runs: list[tuple[Path, list[dict]]] = []
+
     for pdf_path in pdf_paths:
         if not pdf_path.exists():
             console.print(f"[yellow]WARN[/] {pdf_path} not found — skipping")
@@ -800,12 +892,15 @@ def main() -> None:
 
         all_meta = run_pdf(pdf_path, run_dir, args.libraries, args.timeout, args.workers)
         write_summary(run_dir, all_meta, pdf_profile)
+        all_runs.append((pdf_path, all_meta))
 
         if args.baseline:
             console.print(Rule("[dim]Baseline Comparison[/]", style="dim"))
             compare_baseline(args.baseline, all_meta)
 
         console.print(f"  [dim]Results written to:[/] {run_dir}\n")
+
+    print_final_matrix(all_runs)
 
 
 if __name__ == "__main__":
