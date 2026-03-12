@@ -15,16 +15,20 @@ results into a structured output directory:
       pymupdf/  …
       pdf_oxide/  …
       summary.json    ← timing, memory, quality metrics for every library
+      report.html     ← self-contained HTML report
 
 Usage:
   python run_comparison.py my.pdf
   python run_comparison.py *.pdf --results-dir /tmp/pdf-runs
   python run_comparison.py my.pdf --libraries pdfplumber camelot
+  python run_comparison.py my.pdf --baseline results/prev_run/summary.json
 """
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -62,6 +66,26 @@ LIBRARIES: dict[str, list[str]] = {
     "marker":      [sys.executable, "parsers/extract_with_marker.py",      "{pdf}", "-o", "{output}"],
 }
 
+# PyPI distribution name for each library key, used for version lookup.
+_PKG_NAME: dict[str, str] = {
+    "pdfplumber": "pdfplumber",
+    "camelot":    "camelot-py",
+    "pymupdf":    "pymupdf",
+    "pdf_oxide":  "pdf-oxide",
+    "pypdf":      "pypdf",
+    "markitdown": "markitdown",
+    "docling":    "docling",
+    "marker":     "marker-pdf",
+}
+
+
+def _lib_version(lib: str) -> str:
+    """Return the installed version of the package backing *lib*, or 'unknown'."""
+    try:
+        return importlib.metadata.version(_PKG_NAME.get(lib, lib))
+    except importlib.metadata.PackageNotFoundError:
+        return "unknown"
+
 
 # ---------------------------------------------------------------------------
 # CLI
@@ -82,6 +106,8 @@ def parse_args() -> argparse.Namespace:
                         help="Per-library timeout in seconds (default: 300).")
     parser.add_argument("--workers", type=int, default=None,
                         help="Max parallel library runs per PDF. Defaults to number of libraries.")
+    parser.add_argument("--baseline", type=Path, default=None, metavar="SUMMARY_JSON",
+                        help="Path to a previous run's summary.json to diff results against.")
     return parser.parse_args()
 
 
@@ -161,28 +187,55 @@ def profile_pdf(pdf_path: Path) -> dict:
     return profile
 
 
+def _profile_renderable(profile: dict):
+    """Return a Rich Table for the PDF profile suitable for use inside a Panel."""
+    flags = []
+    if profile.get("has_text"):            flags.append("[green]text[/]")
+    if profile.get("has_images"):          flags.append("[blue]images[/]")
+    if profile.get("has_tables"):          flags.append("[cyan]tables[/]")
+    if profile.get("pages_multi_column"):  flags.append("[yellow]multi-column[/]")
+    if profile.get("is_fully_rasterised"): flags.append("[bold red]FULLY RASTERISED[/]")
+
+    t = Table(box=None, show_header=False, padding=(0, 2))
+    t.add_column(style="dim", min_width=14)
+    t.add_column()
+    t.add_row("Pages",       f"{profile['page_count']}  ({profile['file_size_kb']} KB)")
+    t.add_row("Features",    "  ".join(flags) or "none detected")
+    t.add_row("Text pages",  str(profile["pages_with_text"]))
+    t.add_row("Image pages", f"{profile['pages_with_images']}  (rasterised: {profile['pages_rasterised']})")
+    t.add_row("Table pages", str(profile["pages_with_tables"]))
+    t.add_row("2-col pages", str(profile["pages_multi_column"]))
+    return t
+
 
 # ---------------------------------------------------------------------------
-# Memory monitoring
-# Polls the subprocess RSS every 100 ms in a background thread.
+# Process monitoring
+# Polls the subprocess RSS and CPU every 100 ms in a background thread.
 # ---------------------------------------------------------------------------
 
-def _monitor_peak_rss(pid: int, result: dict, stop: threading.Event) -> None:
-    """Record peak RSS (bytes) of a process until stop is set."""
-    peak = 0
+def _monitor_process(pid: int, result: dict, stop: threading.Event) -> None:
+    """Record peak RSS (bytes) and last-known CPU times of a process until stop is set."""
+    peak_rss = 0
+    cpu_user = 0.0
+    cpu_sys  = 0.0
     try:
         proc = psutil.Process(pid)
         while not stop.is_set():
             try:
-                rss = proc.memory_info().rss
-                if rss > peak:
-                    peak = rss
+                mem = proc.memory_info().rss
+                if mem > peak_rss:
+                    peak_rss = mem
+                ct = proc.cpu_times()
+                cpu_user = ct.user
+                cpu_sys  = ct.system
             except psutil.NoSuchProcess:
                 break
             stop.wait(0.1)
     except psutil.NoSuchProcess:
         pass
-    result["peak_rss_bytes"] = peak
+    result["peak_rss_bytes"] = peak_rss
+    result["cpu_user_s"]     = round(cpu_user, 2)
+    result["cpu_sys_s"]      = round(cpu_sys,  2)
 
 
 # ---------------------------------------------------------------------------
@@ -194,14 +247,26 @@ def _analyze_output(output_file: Path) -> dict:
     """Return text-quality metrics for the extracted markdown file."""
     if not output_file.exists():
         return {}
-    text = output_file.read_text(encoding="utf-8", errors="replace")
-    # Count markdown table separator rows (one per table body start)
-    table_count = sum(1 for line in text.splitlines() if line.startswith("| ---"))
+    text  = output_file.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines()
+    non_empty = [ln for ln in lines if ln.strip()]
+
+    table_count   = sum(1 for ln in lines if ln.startswith("| ---"))
+    heading_count = sum(1 for ln in lines if re.match(r"^#{1,6}\s", ln))
+    enc_errors    = text.count("\ufffd")
+    dup_ratio     = (
+        round(1.0 - len(set(non_empty)) / len(non_empty), 3)
+        if non_empty else 0.0
+    )
+
     return {
-        "char_count":  len(text),
-        "word_count":  len(text.split()),
-        "line_count":  text.count("\n"),
-        "table_count": table_count,
+        "char_count":           len(text),
+        "word_count":           len(text.split()),
+        "line_count":           text.count("\n"),
+        "table_count":          table_count,
+        "heading_count":        heading_count,
+        "encoding_errors":      enc_errors,
+        "duplicate_line_ratio": dup_ratio,
     }
 
 
@@ -226,27 +291,33 @@ def run_library(
     ]
 
     meta: dict = {
-        "library":         library,
-        "pdf":             str(pdf_path),
-        "output":          str(output_file),
-        "command":         cmd,
-        "started_at":      datetime.now(timezone.utc).isoformat(),
-        "elapsed_seconds": None,
-        "status":          None,
-        "returncode":      None,
-        "error":           None,
+        "library":              library,
+        "lib_version":          _lib_version(library),
+        "pdf":                  str(pdf_path),
+        "output":               str(output_file),
+        "command":              cmd,
+        "started_at":           datetime.now(timezone.utc).isoformat(),
+        "elapsed_seconds":      None,
+        "status":               None,
+        "returncode":           None,
+        "error":                None,
         # --- resource metrics ---
-        "output_bytes":    None,
-        "peak_rss_mb":     None,
+        "output_bytes":         None,
+        "peak_rss_mb":          None,
+        "cpu_user_s":           None,
+        "cpu_sys_s":            None,
         # --- quality metrics ---
-        "char_count":      None,
-        "word_count":      None,
-        "line_count":      None,
-        "table_count":     None,
+        "char_count":           None,
+        "word_count":           None,
+        "line_count":           None,
+        "table_count":          None,
+        "heading_count":        None,
+        "encoding_errors":      None,
+        "duplicate_line_ratio": None,
     }
 
     t0 = time.perf_counter()
-    mem_result: dict = {}
+    proc_result: dict = {}
     stop_event = threading.Event()
 
     try:
@@ -259,8 +330,8 @@ def run_library(
         )
 
         monitor = threading.Thread(
-            target=_monitor_peak_rss,
-            args=(proc.pid, mem_result, stop_event),
+            target=_monitor_process,
+            args=(proc.pid, proc_result, stop_event),
             daemon=True,
         )
         monitor.start()
@@ -293,8 +364,10 @@ def run_library(
         stop_event.set()
         monitor.join()
         meta["elapsed_seconds"] = round(time.perf_counter() - t0, 3)
-        peak = mem_result.get("peak_rss_bytes", 0)
+        peak = proc_result.get("peak_rss_bytes", 0)
         meta["peak_rss_mb"] = round(peak / 1024 / 1024, 1) if peak else None
+        meta["cpu_user_s"]  = proc_result.get("cpu_user_s")
+        meta["cpu_sys_s"]   = proc_result.get("cpu_sys_s")
 
     (output_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
     return meta
@@ -331,23 +404,26 @@ def run_pdf(
                 pool.submit(run_library, lib, LIBRARIES[lib], pdf_path, run_dir / lib, timeout): lib
                 for lib in libraries
             }
-            # Mark all as running now that they've been submitted
             for lib in libraries:
                 progress.update(task_ids[lib], status="[yellow]running…[/]")
 
             for future in as_completed(futures_to_lib):
-                lib = futures_to_lib[future]
+                lib  = futures_to_lib[future]
                 meta = future.result()
                 results[lib] = meta
 
                 s = meta["status"]
                 if s == "ok":
+                    enc = meta.get("encoding_errors") or 0
+                    enc_str = f"  [red]{enc} enc-err[/]" if enc else ""
                     status_str = (
                         f"[green]OK[/]  "
                         f"[white]{meta['elapsed_seconds']:.1f}s[/]  "
                         f"[dim]{meta['peak_rss_mb'] or 0} MB[/]  "
                         f"[cyan]{meta['word_count'] or 0:,} words[/]  "
-                        f"[blue]{meta['table_count'] or 0} tables[/]"
+                        f"[blue]{meta['table_count'] or 0} tables[/]  "
+                        f"[magenta]{meta.get('heading_count') or 0} hdgs[/]"
+                        f"{enc_str}"
                     )
                 elif s == "timeout":
                     status_str = f"[bold yellow]TIMEOUT[/] after {meta['elapsed_seconds']:.0f}s"
@@ -362,7 +438,7 @@ def run_pdf(
 
 
 # ---------------------------------------------------------------------------
-# Summary
+# Summary table + HTML report
 # ---------------------------------------------------------------------------
 
 _STATUS_STYLE = {
@@ -383,22 +459,287 @@ def write_summary(run_dir: Path, all_meta: list[dict], pdf_profile: dict) -> Non
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
     t = Table(box=box.ROUNDED, show_header=True, header_style="bold", padding=(0, 1))
-    t.add_column("Library",  style="bold cyan",  min_width=12)
-    t.add_column("Status",   justify="center",   min_width=9)
-    t.add_column("Time",     justify="right",    style="white",   min_width=7)
-    t.add_column("Mem",      justify="right",    style="dim",     min_width=8)
-    t.add_column("Words",    justify="right",    style="cyan",    min_width=8)
-    t.add_column("Tables",   justify="right",    style="blue",    min_width=7)
-    t.add_column("Chars",    justify="right",    style="dim",     min_width=9)
+    t.add_column("Library",  style="bold cyan",    min_width=11)
+    t.add_column("Ver",      style="dim",          min_width=6)
+    t.add_column("Status",   justify="center",     min_width=9)
+    t.add_column("Wall",     justify="right",      style="white",   min_width=6)
+    t.add_column("CPU",      justify="right",      style="dim",     min_width=6)
+    t.add_column("Mem",      justify="right",      style="dim",     min_width=7)
+    t.add_column("Words",    justify="right",      style="cyan",    min_width=7)
+    t.add_column("Tables",   justify="right",      style="blue",    min_width=6)
+    t.add_column("Hdgs",     justify="right",      style="magenta", min_width=5)
+    t.add_column("Enc✗",     justify="right",      min_width=5)
+    t.add_column("Dup%",     justify="right",      style="dim",     min_width=5)
 
     for m in all_meta:
         status  = _STATUS_STYLE.get(m["status"] or "", m["status"] or "")
-        elapsed = f"{m['elapsed_seconds']:.1f}s"    if m["elapsed_seconds"] is not None else "---"
-        mem     = f"{m['peak_rss_mb']} MB"          if m["peak_rss_mb"]     is not None else "---"
-        words   = f"{m['word_count']:,}"            if m["word_count"]      is not None else "---"
-        tables  = str(m["table_count"])             if m["table_count"]     is not None else "---"
-        chars   = f"{m['char_count']:,}"            if m["char_count"]      is not None else "---"
-        t.add_row(m["library"], status, elapsed, mem, words, tables, chars)
+        wall    = f"{m['elapsed_seconds']:.1f}s"  if m["elapsed_seconds"] is not None else "---"
+        cpu_tot = (m.get("cpu_user_s") or 0) + (m.get("cpu_sys_s") or 0)
+        cpu     = f"{cpu_tot:.1f}s"               if m.get("cpu_user_s") is not None  else "---"
+        mem     = f"{m['peak_rss_mb']}MB"         if m["peak_rss_mb"]    is not None  else "---"
+        words   = f"{m['word_count']:,}"          if m["word_count"]     is not None  else "---"
+        tables  = str(m["table_count"])           if m["table_count"]    is not None  else "---"
+        hdgs    = str(m.get("heading_count") or 0) if m.get("heading_count") is not None else "---"
+        enc_val = m.get("encoding_errors")
+        enc     = ("[red]" + str(enc_val) + "[/]") if enc_val else (str(enc_val) if enc_val is not None else "---")
+        dup_val = m.get("duplicate_line_ratio")
+        dup     = f"{dup_val * 100:.1f}%" if dup_val is not None else "---"
+
+        t.add_row(m["library"], m.get("lib_version") or "?", status,
+                  wall, cpu, mem, words, tables, hdgs, enc, dup)
+
+    console.print()
+    console.print(t)
+
+    _generate_html_report(run_dir, all_meta, pdf_profile)
+    console.print(f"  [dim]HTML report:[/] {run_dir / 'report.html'}\n")
+
+
+# ---------------------------------------------------------------------------
+# HTML report
+# ---------------------------------------------------------------------------
+
+def _generate_html_report(run_dir: Path, all_meta: list[dict], pdf_profile: dict) -> None:
+    """Write a self-contained, sortable HTML report to run_dir/report.html."""
+    pdf_name     = Path(all_meta[0]["pdf"]).name if all_meta else "unknown"
+    generated_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+    # Profile table rows
+    flags = []
+    if pdf_profile.get("has_text"):            flags.append("text")
+    if pdf_profile.get("has_images"):          flags.append("images")
+    if pdf_profile.get("has_tables"):          flags.append("tables")
+    if pdf_profile.get("pages_multi_column"):  flags.append("multi-column")
+    if pdf_profile.get("is_fully_rasterised"): flags.append("FULLY RASTERISED")
+
+    profile_rows_html = ""
+    for label, val in [
+        ("Pages",       f"{pdf_profile.get('page_count', '?')}  ({pdf_profile.get('file_size_kb', '?')} KB)"),
+        ("Features",    ", ".join(flags) or "none"),
+        ("Text pages",  str(pdf_profile.get("pages_with_text",   "?"))),
+        ("Image pages", f"{pdf_profile.get('pages_with_images', '?')}  (rasterised: {pdf_profile.get('pages_rasterised', '?')})"),
+        ("Table pages", str(pdf_profile.get("pages_with_tables", "?"))),
+        ("2-col pages", str(pdf_profile.get("pages_multi_column","?"))),
+    ]:
+        profile_rows_html += f"<tr><td>{label}</td><td>{val}</td></tr>\n"
+
+    # Results table rows
+    def _e(v: object) -> str:
+        """HTML-escape a string value."""
+        return str(v).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    def _fmt(val: object, spec: str) -> str:
+        if val is None:
+            return "—"
+        try:
+            return format(val, spec)
+        except (TypeError, ValueError):
+            return str(val)
+
+    results_rows_html = ""
+    for m in all_meta:
+        s            = m.get("status", "")
+        status_cls   = {"ok": "ok", "error": "err", "timeout": "warn", "exception": "err"}.get(s, "")
+        cpu_tot      = (m.get("cpu_user_s") or 0) + (m.get("cpu_sys_s") or 0)
+        cpu_str      = f"{cpu_tot:.1f}s" if m.get("cpu_user_s") is not None else "—"
+        dup_val      = m.get("duplicate_line_ratio")
+        dup_str      = f"{dup_val * 100:.1f}%" if dup_val is not None else "—"
+        enc_val      = m.get("encoding_errors") or 0
+        enc_cls      = "enc-err" if enc_val > 0 else ""
+
+        results_rows_html += f"""
+        <tr>
+          <td><strong>{_e(m.get('library', '?'))}</strong></td>
+          <td class="dim">{_e(m.get('lib_version', '?'))}</td>
+          <td class="status {status_cls}">{_e(s.upper())}</td>
+          <td>{_fmt(m.get('elapsed_seconds'), '.1f')}s</td>
+          <td>{cpu_str}</td>
+          <td>{_fmt(m.get('peak_rss_mb'), '.0f')} MB</td>
+          <td>{_fmt(m.get('word_count'), ',')}</td>
+          <td>{_fmt(m.get('table_count'), 'd')}</td>
+          <td>{_fmt(m.get('heading_count'), 'd')}</td>
+          <td class="{enc_cls}">{enc_val}</td>
+          <td>{dup_str}</td>
+          <td>{_fmt(m.get('char_count'), ',')}</td>
+        </tr>"""
+
+    # Output previews
+    previews_html = ""
+    for m in all_meta:
+        lib         = m.get("library", "?")
+        ver         = m.get("lib_version", "?")
+        output_path = Path(m.get("output", ""))
+        if output_path.exists() and m.get("status") == "ok":
+            raw     = output_path.read_text(encoding="utf-8", errors="replace")[:4000]
+            preview = _e(raw)
+        else:
+            preview = _e(m.get("error") or "No output produced.")
+        previews_html += f"""
+        <details>
+          <summary><strong>{_e(lib)}</strong> <span class="dim">v{_e(ver)}</span></summary>
+          <pre class="output">{preview}</pre>
+        </details>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>PDF Extraction Report — {_e(pdf_name)}</title>
+<style>
+  :root {{
+    --bg:#0f1117; --surface:#1a1d27; --border:#2d3148;
+    --text:#e2e8f0; --dim:#6b7280; --accent:#60a5fa;
+    --green:#34d399; --red:#f87171; --yellow:#fbbf24; --magenta:#e879f9;
+  }}
+  * {{ box-sizing:border-box; margin:0; padding:0 }}
+  body {{ font-family:ui-monospace,monospace; background:var(--bg); color:var(--text);
+          font-size:13px; line-height:1.6; padding:2rem; max-width:1400px; margin:0 auto }}
+  h1  {{ color:var(--accent); font-size:1.4rem; margin-bottom:.2rem }}
+  h2  {{ color:var(--dim); font-size:.85rem; font-weight:normal; margin-bottom:1.5rem }}
+  h3  {{ color:var(--text); font-size:1rem; margin:2rem 0 .75rem }}
+  .meta {{ color:var(--dim); font-size:.8rem; margin-bottom:2rem }}
+  table {{ width:100%; border-collapse:collapse; margin-bottom:1.5rem }}
+  th {{ background:var(--surface); color:var(--dim); padding:6px 10px; text-align:left;
+        font-size:.72rem; text-transform:uppercase; letter-spacing:.05em;
+        border-bottom:1px solid var(--border); cursor:pointer; user-select:none }}
+  th:hover {{ color:var(--text) }}
+  th.sort-asc::after  {{ content:" ▲"; color:var(--accent) }}
+  th.sort-desc::after {{ content:" ▼"; color:var(--accent) }}
+  td {{ padding:6px 10px; border-bottom:1px solid var(--border) }}
+  tr:hover td {{ background:var(--surface) }}
+  .dim {{ color:var(--dim) }}
+  .status.ok   {{ color:var(--green);   font-weight:bold }}
+  .status.err  {{ color:var(--red);     font-weight:bold }}
+  .status.warn {{ color:var(--yellow);  font-weight:bold }}
+  .enc-err {{ color:var(--red) }}
+  details {{ border:1px solid var(--border); border-radius:6px; margin-bottom:.6rem; overflow:hidden }}
+  summary {{ background:var(--surface); padding:8px 12px; cursor:pointer; list-style:none }}
+  summary:hover {{ background:#22263a }}
+  summary::marker, summary::-webkit-details-marker {{ display:none }}
+  summary::before {{ content:"▶  "; color:var(--dim); font-size:.7rem }}
+  details[open] summary::before {{ content:"▼  " }}
+  pre.output {{ padding:1rem; font-size:12px; line-height:1.5; white-space:pre-wrap;
+                word-break:break-word; max-height:420px; overflow-y:auto }}
+</style>
+</head>
+<body>
+<h1>PDF Extraction Report</h1>
+<h2>{_e(pdf_name)}</h2>
+<p class="meta">Run&nbsp;dir: {_e(str(run_dir))} &nbsp;|&nbsp; Generated: {generated_at}</p>
+
+<h3>PDF Profile</h3>
+<table>
+  <thead><tr><th>Property</th><th>Value</th></tr></thead>
+  <tbody>{profile_rows_html}</tbody>
+</table>
+
+<h3>Results <span class="dim">(click column header to sort)</span></h3>
+<table id="results">
+  <thead><tr>
+    <th>Library</th><th>Version</th><th>Status</th>
+    <th>Wall</th><th>CPU</th><th>Mem</th>
+    <th>Words</th><th>Tables</th><th>Headings</th>
+    <th>Enc.Errors</th><th>Dup%</th><th>Chars</th>
+  </tr></thead>
+  <tbody>{results_rows_html}</tbody>
+</table>
+
+<h3>Output Previews <span class="dim">(first 4,000 chars)</span></h3>
+{previews_html}
+
+<script>
+document.querySelectorAll('#results th').forEach((th, col) => {{
+  th.addEventListener('click', () => {{
+    const tbody = th.closest('table').querySelector('tbody');
+    const rows  = [...tbody.querySelectorAll('tr')];
+    const asc   = th.classList.toggle('sort-asc');
+    if (!asc) th.classList.toggle('sort-desc', true); else th.classList.remove('sort-desc');
+    th.closest('tr').querySelectorAll('th').forEach(o => {{ if (o !== th) {{ o.classList.remove('sort-asc','sort-desc') }} }});
+    rows.sort((a, b) => {{
+      const av = a.cells[col].textContent.trim();
+      const bv = b.cells[col].textContent.trim();
+      const an = parseFloat(av.replace(/[^0-9.-]/g, ''));
+      const bn = parseFloat(bv.replace(/[^0-9.-]/g, ''));
+      if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
+      return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+    }});
+    rows.forEach(r => tbody.appendChild(r));
+  }});
+}});
+</script>
+</body>
+</html>"""
+
+    (run_dir / "report.html").write_text(html, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Baseline comparison
+# ---------------------------------------------------------------------------
+
+# Metrics where a lower value is better (delta<0 = green).
+_LOWER_IS_BETTER = {"elapsed_seconds", "peak_rss_mb", "encoding_errors",
+                    "duplicate_line_ratio", "cpu_user_s", "cpu_sys_s"}
+
+
+def compare_baseline(baseline_path: Path, all_meta: list[dict]) -> None:
+    """Print a regression table diffing current results against a previous summary.json."""
+    try:
+        baseline = json.loads(baseline_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        console.print(f"[yellow]Could not load baseline:[/] {exc}")
+        return
+
+    base_by_lib: dict[str, dict] = {m["library"]: m for m in baseline.get("results", [])}
+
+    METRICS = [
+        ("elapsed_seconds",      "Wall time (s)",  ".1f", "s"),
+        ("cpu_user_s",           "CPU user (s)",   ".1f", "s"),
+        ("peak_rss_mb",          "Mem (MB)",        ".0f", " MB"),
+        ("word_count",           "Words",            ",",  ""),
+        ("table_count",          "Tables",           "d",  ""),
+        ("heading_count",        "Headings",         "d",  ""),
+        ("encoding_errors",      "Enc. errors",      "d",  ""),
+        ("duplicate_line_ratio", "Dup. ratio",      ".3f", ""),
+    ]
+
+    t = Table(box=box.SIMPLE, header_style="bold", title="[bold]Baseline Comparison[/]",
+              title_style="bright_blue")
+    t.add_column("Library",  style="bold cyan", min_width=12)
+    t.add_column("Metric",   style="dim",       min_width=16)
+    t.add_column("Baseline", justify="right",   min_width=10)
+    t.add_column("Current",  justify="right",   min_width=10)
+    t.add_column("Delta",    justify="right",   min_width=10)
+
+    for cur in all_meta:
+        lib  = cur["library"]
+        base = base_by_lib.get(lib)
+        if not base:
+            continue
+        for key, label, fmt_spec, unit in METRICS:
+            b_val = base.get(key)
+            c_val = cur.get(key)
+            if b_val is None or c_val is None:
+                continue
+            try:
+                delta = float(c_val) - float(b_val)
+            except (TypeError, ValueError):
+                continue
+
+            threshold = max(abs(float(b_val)) * 0.05, 1e-9)
+            if key in _LOWER_IS_BETTER:
+                delta_style = "green" if delta < -threshold else ("red" if delta > threshold else "dim")
+            else:
+                delta_style = "green" if delta > threshold else ("red" if delta < -threshold else "dim")
+
+            try:
+                b_str = format(b_val, fmt_spec) + unit
+                c_str = format(c_val, fmt_spec) + unit
+                d_str = f"[{delta_style}]{delta:+.2g}{unit}[/]"
+            except (TypeError, ValueError):
+                b_str, c_str, d_str = str(b_val), str(c_val), "?"
+
+            t.add_row(lib, label, b_str, c_str, d_str)
 
     console.print()
     console.print(t)
@@ -410,13 +751,11 @@ def write_summary(run_dir: Path, all_meta: list[dict], pdf_profile: dict) -> Non
 
 def resolve_pdfs(patterns: list[str]) -> list[Path]:
     """Expand shell glob patterns and plain paths into a sorted, deduplicated list of PDFs."""
-    seen: set[Path] = set()
+    seen:  set[Path]  = set()
     paths: list[Path] = []
     for pattern in patterns:
-        # Let Path.glob handle wildcards; fall back to a literal path otherwise
         if any(c in pattern for c in ("*", "?", "[")):
-            cwd = Path.cwd()
-            matches = sorted(cwd.glob(pattern))
+            matches = sorted(Path.cwd().glob(pattern))
         else:
             matches = [Path(pattern)]
         for p in matches:
@@ -428,7 +767,7 @@ def resolve_pdfs(patterns: list[str]) -> list[Path]:
 
 
 def main() -> None:
-    args = parse_args()
+    args      = parse_args()
     pdf_paths = resolve_pdfs(args.pdfs)
 
     if not pdf_paths:
@@ -462,28 +801,11 @@ def main() -> None:
         all_meta = run_pdf(pdf_path, run_dir, args.libraries, args.timeout, args.workers)
         write_summary(run_dir, all_meta, pdf_profile)
 
-        console.print(f"\n  [dim]Results written to:[/] {run_dir}\n")
+        if args.baseline:
+            console.print(Rule("[dim]Baseline Comparison[/]", style="dim"))
+            compare_baseline(args.baseline, all_meta)
 
-
-def _profile_renderable(profile: dict):
-    """Return a Rich Table for the PDF profile suitable for use inside a Panel."""
-    flags = []
-    if profile.get("has_text"):            flags.append("[green]text[/]")
-    if profile.get("has_images"):          flags.append("[blue]images[/]")
-    if profile.get("has_tables"):          flags.append("[cyan]tables[/]")
-    if profile.get("pages_multi_column"):  flags.append("[yellow]multi-column[/]")
-    if profile.get("is_fully_rasterised"): flags.append("[bold red]FULLY RASTERISED[/]")
-
-    t = Table(box=None, show_header=False, padding=(0, 2))
-    t.add_column(style="dim", min_width=14)
-    t.add_column()
-    t.add_row("Pages",       f"{profile['page_count']}  ({profile['file_size_kb']} KB)")
-    t.add_row("Features",    "  ".join(flags) or "none detected")
-    t.add_row("Text pages",  str(profile["pages_with_text"]))
-    t.add_row("Image pages", f"{profile['pages_with_images']}  (rasterised: {profile['pages_rasterised']})")
-    t.add_row("Table pages", str(profile["pages_with_tables"]))
-    t.add_row("2-col pages", str(profile["pages_multi_column"]))
-    return t
+        console.print(f"  [dim]Results written to:[/] {run_dir}\n")
 
 
 if __name__ == "__main__":
