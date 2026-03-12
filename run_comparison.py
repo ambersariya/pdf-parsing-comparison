@@ -35,6 +35,15 @@ from pathlib import Path
 
 import pdfplumber
 import psutil
+from rich import box
+from rich.console import Console
+from rich.live import Live
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.rule import Rule
+from rich.table import Table
+
+console = Console()
 
 
 # ---------------------------------------------------------------------------
@@ -151,22 +160,6 @@ def profile_pdf(pdf_path: Path) -> dict:
     )
     return profile
 
-
-def print_profile(profile: dict) -> None:
-    flags = []
-    if profile.get("has_text"):            flags.append("text")
-    if profile.get("has_images"):          flags.append("images")
-    if profile.get("has_tables"):          flags.append("tables")
-    if profile.get("pages_multi_column"):  flags.append("multi-column")
-    if profile.get("is_fully_rasterised"): flags.append("FULLY RASTERISED")
-
-    print(f"  Pages       : {profile['page_count']}  ({profile['file_size_kb']} KB)")
-    print(f"  Features    : {', '.join(flags) or 'none detected'}")
-    print(f"  Text pages  : {profile['pages_with_text']}")
-    print(f"  Image pages : {profile['pages_with_images']}  "
-          f"(rasterised: {profile['pages_rasterised']})")
-    print(f"  Table pages : {profile['pages_with_tables']}")
-    print(f"  2-col pages : {profile['pages_multi_column']}")
 
 
 # ---------------------------------------------------------------------------
@@ -320,28 +313,50 @@ def run_pdf(
 ) -> list[dict]:
     """Run all selected libraries against one PDF in parallel; return results in library order."""
     max_workers = workers or len(libraries)
-    futures_to_lib: dict = {}
     results: dict[str, dict] = {}
 
-    print(f"  Running {len(libraries)} libraries with up to {max_workers} in parallel...")
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[bold cyan]{task.description:<14}[/]"),
+        TimeElapsedColumn(),
+        TextColumn("{task.fields[status]}"),
+        console=console,
+    )
 
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        for lib in libraries:
-            future = pool.submit(run_library, lib, LIBRARIES[lib], pdf_path, run_dir / lib, timeout)
-            futures_to_lib[future] = lib
+    with Live(progress, console=console, refresh_per_second=10):
+        task_ids = {lib: progress.add_task(lib, status="[dim]queued[/]") for lib in libraries}
 
-        for future in as_completed(futures_to_lib):
-            lib = futures_to_lib[future]
-            meta = future.result()
-            results[lib] = meta
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures_to_lib = {
+                pool.submit(run_library, lib, LIBRARIES[lib], pdf_path, run_dir / lib, timeout): lib
+                for lib in libraries
+            }
+            # Mark all as running now that they've been submitted
+            for lib in libraries:
+                progress.update(task_ids[lib], status="[yellow]running…[/]")
 
-            status_label = {
-                "ok":        f"ok  {meta['elapsed_seconds']:.1f}s  {meta['peak_rss_mb']} MB  {meta['word_count']:,} words  {meta['table_count']} tables",
-                "error":     f"FAILED (rc={meta['returncode']})",
-                "timeout":   f"TIMEOUT after {meta['elapsed_seconds']:.0f}s",
-                "exception": f"EXCEPTION: {meta['error']}",
-            }.get(meta["status"], meta["status"])
-            print(f"  [{lib}] {status_label}")
+            for future in as_completed(futures_to_lib):
+                lib = futures_to_lib[future]
+                meta = future.result()
+                results[lib] = meta
+
+                s = meta["status"]
+                if s == "ok":
+                    status_str = (
+                        f"[green]OK[/]  "
+                        f"[white]{meta['elapsed_seconds']:.1f}s[/]  "
+                        f"[dim]{meta['peak_rss_mb']} MB[/]  "
+                        f"[cyan]{meta['word_count']:,} words[/]  "
+                        f"[blue]{meta['table_count']} tables[/]"
+                    )
+                elif s == "timeout":
+                    status_str = f"[bold yellow]TIMEOUT[/] after {meta['elapsed_seconds']:.0f}s"
+                elif s == "error":
+                    status_str = f"[bold red]FAILED[/] (rc={meta['returncode']})"
+                else:
+                    status_str = f"[bold red]EXCEPTION[/] {meta['error']}"
+
+                progress.update(task_ids[lib], status=status_str, completed=True)
 
     return [results[lib] for lib in libraries]
 
@@ -349,6 +364,14 @@ def run_pdf(
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
+
+_STATUS_STYLE = {
+    "ok":        "[bold green]OK[/]",
+    "error":     "[bold red]FAILED[/]",
+    "timeout":   "[bold yellow]TIMEOUT[/]",
+    "exception": "[bold red]EXCEPTION[/]",
+}
+
 
 def write_summary(run_dir: Path, all_meta: list[dict], pdf_profile: dict) -> None:
     summary = {
@@ -359,17 +382,26 @@ def write_summary(run_dir: Path, all_meta: list[dict], pdf_profile: dict) -> Non
     }
     (run_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-    header = f"  {'Library':<14}  {'Status':<8}  {'Time':>6}  {'Mem':>7}  {'Words':>7}  {'Tables':>6}  {'Chars':>8}"
-    print(f"\n{header}")
-    print("  " + "-" * (len(header) - 2))
+    t = Table(box=box.ROUNDED, show_header=True, header_style="bold", padding=(0, 1))
+    t.add_column("Library",  style="bold cyan",  min_width=12)
+    t.add_column("Status",   justify="center",   min_width=9)
+    t.add_column("Time",     justify="right",    style="white",   min_width=7)
+    t.add_column("Mem",      justify="right",    style="dim",     min_width=8)
+    t.add_column("Words",    justify="right",    style="cyan",    min_width=8)
+    t.add_column("Tables",   justify="right",    style="blue",    min_width=7)
+    t.add_column("Chars",    justify="right",    style="dim",     min_width=9)
+
     for m in all_meta:
-        status  = (m["status"] or "").upper().ljust(8)
-        elapsed = f"{m['elapsed_seconds']:.1f}s".rjust(6)  if m["elapsed_seconds"] is not None else "   ---"
-        mem     = f"{m['peak_rss_mb']} MB".rjust(7)        if m["peak_rss_mb"]     is not None else "    ---"
-        words   = f"{m['word_count']:,}".rjust(7)           if m["word_count"]      is not None else "    ---"
-        tables  = str(m["table_count"]).rjust(6)            if m["table_count"]     is not None else "   ---"
-        chars   = f"{m['char_count']:,}".rjust(8)           if m["char_count"]      is not None else "     ---"
-        print(f"  {m['library']:<14}  {status}  {elapsed}  {mem}  {words}  {tables}  {chars}")
+        status  = _STATUS_STYLE.get(m["status"] or "", m["status"] or "")
+        elapsed = f"{m['elapsed_seconds']:.1f}s"    if m["elapsed_seconds"] is not None else "---"
+        mem     = f"{m['peak_rss_mb']} MB"          if m["peak_rss_mb"]     is not None else "---"
+        words   = f"{m['word_count']:,}"            if m["word_count"]      is not None else "---"
+        tables  = str(m["table_count"])             if m["table_count"]     is not None else "---"
+        chars   = f"{m['char_count']:,}"            if m["char_count"]      is not None else "---"
+        t.add_row(m["library"], status, elapsed, mem, words, tables, chars)
+
+    console.print()
+    console.print(t)
 
 
 # ---------------------------------------------------------------------------
@@ -400,34 +432,58 @@ def main() -> None:
     pdf_paths = resolve_pdfs(args.pdfs)
 
     if not pdf_paths:
-        print("[ERROR] No PDF files matched the given patterns.", file=sys.stderr)
+        console.print("[bold red]ERROR[/] No PDF files matched the given patterns.", highlight=False)
         sys.exit(1)
 
-    print(f"Found {len(pdf_paths)} PDF(s) to process.\n")
+    console.print(f"\nFound [bold]{len(pdf_paths)}[/] PDF(s) to process.\n")
 
     for pdf_path in pdf_paths:
         if not pdf_path.exists():
-            print(f"[WARN] {pdf_path} not found — skipping", file=sys.stderr)
+            console.print(f"[yellow]WARN[/] {pdf_path} not found — skipping")
             continue
 
         run_id  = datetime.now().strftime("%Y%m%d_%H%M%S")
         run_dir = args.results_dir / f"{run_id}_{pdf_path.stem}"
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        print(f"\n{'='*60}")
-        print(f"PDF   : {pdf_path}")
-        print(f"Run   : {run_dir}")
-        print(f"{'='*60}")
+        console.print(Rule(f"[bold]{pdf_path.name}[/]", style="bright_blue"))
+        console.print(f"  [dim]Run dir:[/] {run_dir}")
+        console.print()
 
-        print("\n  Profiling PDF...")
-        pdf_profile = profile_pdf(pdf_path)
-        print_profile(pdf_profile)
-        print()
+        with console.status("[dim]Profiling PDF…[/]", spinner="dots"):
+            pdf_profile = profile_pdf(pdf_path)
+        console.print(Panel(
+            _profile_renderable(pdf_profile),
+            title="[bold]PDF Profile[/]",
+            border_style="dim",
+            padding=(0, 1),
+        ))
 
         all_meta = run_pdf(pdf_path, run_dir, args.libraries, args.timeout, args.workers)
         write_summary(run_dir, all_meta, pdf_profile)
 
-        print(f"\n  Results written to: {run_dir}\n")
+        console.print(f"\n  [dim]Results written to:[/] {run_dir}\n")
+
+
+def _profile_renderable(profile: dict):
+    """Return a Rich Table for the PDF profile suitable for use inside a Panel."""
+    flags = []
+    if profile.get("has_text"):            flags.append("[green]text[/]")
+    if profile.get("has_images"):          flags.append("[blue]images[/]")
+    if profile.get("has_tables"):          flags.append("[cyan]tables[/]")
+    if profile.get("pages_multi_column"):  flags.append("[yellow]multi-column[/]")
+    if profile.get("is_fully_rasterised"): flags.append("[bold red]FULLY RASTERISED[/]")
+
+    t = Table(box=None, show_header=False, padding=(0, 2))
+    t.add_column(style="dim", min_width=14)
+    t.add_column()
+    t.add_row("Pages",       f"{profile['page_count']}  ({profile['file_size_kb']} KB)")
+    t.add_row("Features",    "  ".join(flags) or "none detected")
+    t.add_row("Text pages",  str(profile["pages_with_text"]))
+    t.add_row("Image pages", f"{profile['pages_with_images']}  (rasterised: {profile['pages_rasterised']})")
+    t.add_row("Table pages", str(profile["pages_with_tables"]))
+    t.add_row("2-col pages", str(profile["pages_multi_column"]))
+    return t
 
 
 if __name__ == "__main__":
