@@ -66,6 +66,14 @@ LIBRARIES: dict[str, list[str]] = {
     "marker":      [sys.executable, "parsers/extract_with_marker.py",      "{pdf}", "-o", "{output}"],
 }
 
+# Per-library timeout overrides (seconds).  None = no timeout.
+# ML-based libraries load large model weights and can legitimately run for many
+# minutes, especially on first run — so we exempt them from the global limit.
+LIBRARY_TIMEOUTS: dict[str, int | None] = {
+    "marker":  None,
+    "docling": None,
+}
+
 # PyPI distribution name for each library key, used for version lookup.
 _PKG_NAME: dict[str, str] = {
     "pdfplumber": "pdfplumber",
@@ -401,7 +409,10 @@ def run_pdf(
 
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures_to_lib = {
-                pool.submit(run_library, lib, LIBRARIES[lib], pdf_path, run_dir / lib, timeout): lib
+                pool.submit(
+                    run_library, lib, LIBRARIES[lib], pdf_path, run_dir / lib,
+                    LIBRARY_TIMEOUTS[lib] if lib in LIBRARY_TIMEOUTS else timeout,
+                ): lib
                 for lib in libraries
             }
             for lib in libraries:
