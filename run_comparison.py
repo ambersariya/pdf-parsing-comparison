@@ -28,6 +28,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import json
+import os
 import re
 import subprocess
 import sys
@@ -72,6 +73,14 @@ LIBRARIES: dict[str, list[str]] = {
 LIBRARY_TIMEOUTS: dict[str, int | None] = {
     "marker":  None,
     "docling": None,
+}
+
+# Extra environment variables injected into a library's subprocess.
+# PYTORCH_ENABLE_MPS_FALLBACK=1 lets PyTorch silently fall back to CPU for any
+# op the Apple MPS backend doesn't support, preventing AcceleratorError crashes
+# on large PDFs where surya's attention sequence length overflows MPS limits.
+LIBRARY_ENV: dict[str, dict[str, str]] = {
+    "marker": {"PYTORCH_ENABLE_MPS_FALLBACK": "1"},
 }
 
 # PyPI distribution name for each library key, used for version lookup.
@@ -329,12 +338,14 @@ def run_library(
     stop_event = threading.Event()
 
     try:
+        proc_env = {**os.environ, **LIBRARY_ENV.get(library, {})}
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             cwd=Path(__file__).parent,
+            env=proc_env,
         )
 
         monitor = threading.Thread(
