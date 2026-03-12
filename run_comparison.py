@@ -886,7 +886,16 @@ def main() -> None:
         console.print("[bold red]ERROR[/] No PDF files matched the given patterns.", highlight=False)
         sys.exit(1)
 
-    console.print(f"\nFound [bold]{len(pdf_paths)}[/] PDF(s) to process.\n")
+    # Capture the session timestamp once, before any processing starts, so the
+    # directory name reflects when the user invoked the script — not when the
+    # (potentially slow) parsers finished.
+    session_start = time.perf_counter()
+    session_id    = datetime.now().strftime("%Y%m%d_%H%M%S")
+    session_dir   = args.results_dir / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    console.print(f"\nFound [bold]{len(pdf_paths)}[/] PDF(s) to process.")
+    console.print(f"  [dim]Session dir:[/] {session_dir}\n")
 
     all_runs: list[tuple[Path, list[dict]]] = []
 
@@ -895,8 +904,7 @@ def main() -> None:
             console.print(f"[yellow]WARN[/] {pdf_path} not found — skipping")
             continue
 
-        run_id  = datetime.now().strftime("%Y%m%d_%H%M%S")
-        run_dir = args.results_dir / f"{run_id}_{pdf_path.stem}"
+        run_dir = session_dir / pdf_path.stem
         run_dir.mkdir(parents=True, exist_ok=True)
 
         console.print(Rule(f"[bold]{pdf_path.name}[/]", style="bright_blue"))
@@ -920,9 +928,13 @@ def main() -> None:
             console.print(Rule("[dim]Baseline Comparison[/]", style="dim"))
             compare_baseline(args.baseline, all_meta)
 
-        console.print(f"  [dim]Results written to:[/] {run_dir}\n")
-
     print_final_matrix(all_runs)
+
+    total = time.perf_counter() - session_start
+    m, s  = divmod(int(total), 60)
+    total_str = f"{m}m {s}s" if m else f"{s}s"
+    console.print(f"  [dim]All results written to:[/] {session_dir}")
+    console.print(f"  [dim]Total run time:[/] [bold white]{total_str}[/]\n")
 
 
 if __name__ == "__main__":
