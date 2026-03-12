@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls *.pdf)",
+      "Bash(python3 -c \"import camelot\")",
+      "Bash(python3 -m poetry env info)",
+      "Bash(python3 -m poetry run python3 -c \"import pdfplumber; import camelot\")",
+      "Bash(python3 -m poetry install)",
+      "Bash(python3 -m poetry run python3 run_comparison.py TestDocument_0.pdf 2603.11048v1.pdf cognitive-science-society-conference-cogsci-template.pdf)",
+      "Bash(python3 -m poetry add psutil)",
+      "Bash(python3 -m poetry lock --no-update)",
+      "Bash(python3 -m poetry lock)",
+      "Bash(python3 -m poetry run python3 run_comparison.py TestDocument_0.pdf)",
+      "Bash(python3 -m poetry run python3 run_comparison.py TestDocument_0.pdf rasterised-pdf-doc.pdf)",
+      "Bash(python3 -m poetry run python3 run_comparison.py \"*.pdf\" --libraries pymupdf)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(mkdir -p /Users/danishjaved/Downloads/pdf_extraction_demo_bundle/parsers)",
+      "Bash(mv /Users/danishjaved/Downloads/pdf_extraction_demo_bundle/extract_with_pdfplumber.py /Users/danishjaved/Downloads/pdf_extraction_demo_bundle/parsers/)",
+      "Bash(mv /Users/danishjaved/Downloads/pdf_extraction_demo_bundle/extract_with_camelot.py /Users/danishjaved/Downloads/pdf_extraction_demo_bundle/parsers/)",
+      "Bash(mv /Users/danishjaved/Downloads/pdf_extraction_demo_bundle/extract_with_pymupdf.py /Users/danishjaved/Downloads/pdf_extraction_demo_bundle/parsers/)",
+      "Bash(mv /Users/danishjaved/Downloads/pdf_extraction_demo_bundle/extract_with_pdf_oxide.py /Users/danishjaved/Downloads/pdf_extraction_demo_bundle/parsers/)"
+    ]
+  }
+}

@@ -43,10 +43,10 @@ import psutil
 # {pdf} and {output} are filled in at run time.
 # ---------------------------------------------------------------------------
 LIBRARIES: dict[str, list[str]] = {
-    "pdfplumber": [sys.executable, "extract_with_pdfplumber.py", "{pdf}", "-o", "{output}"],
-    "camelot":    [sys.executable, "extract_with_camelot.py",    "{pdf}", "-o", "{output}"],
-    "pymupdf":    [sys.executable, "extract_with_pymupdf.py",    "{pdf}", "-o", "{output}"],
-    "pdf_oxide":  [sys.executable, "extract_with_pdf_oxide.py",  "{pdf}", "-o", "{output}"],
+    "pdfplumber": [sys.executable, "parsers/extract_with_pdfplumber.py", "{pdf}", "-o", "{output}"],
+    "camelot":    [sys.executable, "parsers/extract_with_camelot.py",    "{pdf}", "-o", "{output}"],
+    "pymupdf":    [sys.executable, "parsers/extract_with_pymupdf.py",    "{pdf}", "-o", "{output}"],
+    "pdf_oxide":  [sys.executable, "parsers/extract_with_pdf_oxide.py",  "{pdf}", "-o", "{output}"],
 }
 
 
