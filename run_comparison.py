@@ -345,9 +345,9 @@ def run_pdf(
                     status_str = (
                         f"[green]OK[/]  "
                         f"[white]{meta['elapsed_seconds']:.1f}s[/]  "
-                        f"[dim]{meta['peak_rss_mb']} MB[/]  "
-                        f"[cyan]{meta['word_count']:,} words[/]  "
-                        f"[blue]{meta['table_count']} tables[/]"
+                        f"[dim]{meta['peak_rss_mb'] or 0} MB[/]  "
+                        f"[cyan]{meta['word_count'] or 0:,} words[/]  "
+                        f"[blue]{meta['table_count'] or 0} tables[/]"
                     )
                 elif s == "timeout":
                     status_str = f"[bold yellow]TIMEOUT[/] after {meta['elapsed_seconds']:.0f}s"
