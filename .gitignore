@@ -18,3 +18,4 @@ oxide*.md
 oxide*.html
 plumber*.md
 rasterised-pdf.md
+*/**/.settings.local.json
