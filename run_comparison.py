@@ -43,10 +43,14 @@ import psutil
 # {pdf} and {output} are filled in at run time.
 # ---------------------------------------------------------------------------
 LIBRARIES: dict[str, list[str]] = {
-    "pdfplumber": [sys.executable, "parsers/extract_with_pdfplumber.py", "{pdf}", "-o", "{output}"],
-    "camelot":    [sys.executable, "parsers/extract_with_camelot.py",    "{pdf}", "-o", "{output}"],
-    "pymupdf":    [sys.executable, "parsers/extract_with_pymupdf.py",    "{pdf}", "-o", "{output}"],
-    "pdf_oxide":  [sys.executable, "parsers/extract_with_pdf_oxide.py",  "{pdf}", "-o", "{output}"],
+    "pdfplumber":  [sys.executable, "parsers/extract_with_pdfplumber.py",  "{pdf}", "-o", "{output}"],
+    "camelot":     [sys.executable, "parsers/extract_with_camelot.py",     "{pdf}", "-o", "{output}"],
+    "pymupdf":     [sys.executable, "parsers/extract_with_pymupdf.py",     "{pdf}", "-o", "{output}"],
+    "pdf_oxide":   [sys.executable, "parsers/extract_with_pdf_oxide.py",   "{pdf}", "-o", "{output}"],
+    "pypdf":       [sys.executable, "parsers/extract_with_pypdf.py",       "{pdf}", "-o", "{output}"],
+    "markitdown":  [sys.executable, "parsers/extract_with_markitdown.py",  "{pdf}", "-o", "{output}"],
+    "docling":     [sys.executable, "parsers/extract_with_docling.py",     "{pdf}", "-o", "{output}"],
+    "marker":      [sys.executable, "parsers/extract_with_marker.py",      "{pdf}", "-o", "{output}"],
 }
 
 

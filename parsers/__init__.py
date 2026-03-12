@@ -11,9 +11,13 @@ Each module is also a standalone CLI script that can be invoked directly:
 
 from parsers import (  # noqa: F401
     extract_with_camelot,
+    extract_with_docling,
+    extract_with_marker,
+    extract_with_markitdown,
     extract_with_pdf_oxide,
     extract_with_pdfplumber,
     extract_with_pymupdf,
+    extract_with_pypdf,
 )
 
 __all__ = [
@@ -21,4 +25,8 @@ __all__ = [
     "extract_with_camelot",
     "extract_with_pymupdf",
     "extract_with_pdf_oxide",
+    "extract_with_pypdf",
+    "extract_with_markitdown",
+    "extract_with_docling",
+    "extract_with_marker",
 ]
