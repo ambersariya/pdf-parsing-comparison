@@ -1,0 +1,20 @@
+# PDF test documents — drop files here but don't commit them
+*.pdf
+
+# Comparison run outputs
+results/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Local extraction scratch outputs
+*.txt
+mu*.md
+oxide*.md
+oxide*.html
+plumber*.md
+rasterised-pdf.md
