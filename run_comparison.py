@@ -59,20 +59,22 @@ console = Console()
 LIBRARIES: dict[str, list[str]] = {
     "pdfplumber":  [sys.executable, "parsers/extract_with_pdfplumber.py",  "{pdf}", "-o", "{output}"],
     "camelot":     [sys.executable, "parsers/extract_with_camelot.py",     "{pdf}", "-o", "{output}"],
-    "pymupdf":     [sys.executable, "parsers/extract_with_pymupdf.py",     "{pdf}", "-o", "{output}"],
+    "pymupdf4llm": [sys.executable, "parsers/extract_with_pymupdf4llm.py", "{pdf}", "-o", "{output}"],
     "pdf_oxide":   [sys.executable, "parsers/extract_with_pdf_oxide.py",   "{pdf}", "-o", "{output}"],
     "pypdf":       [sys.executable, "parsers/extract_with_pypdf.py",       "{pdf}", "-o", "{output}"],
     "markitdown":  [sys.executable, "parsers/extract_with_markitdown.py",  "{pdf}", "-o", "{output}"],
-    "docling":     [sys.executable, "parsers/extract_with_docling.py",     "{pdf}", "-o", "{output}"],
-    "marker":      [sys.executable, "parsers/extract_with_marker.py",      "{pdf}", "-o", "{output}"],
+    "docling":          [sys.executable, "parsers/extract_with_docling.py",          "{pdf}", "-o", "{output}"],
+    "marker":           [sys.executable, "parsers/extract_with_marker.py",           "{pdf}", "-o", "{output}"],
+    "amazon_textract":  [sys.executable, "parsers/extract_with_amazon_textract.py",  "{pdf}", "-o", "{output}"],
 }
 
 # Per-library timeout overrides (seconds).  None = no timeout.
 # ML-based libraries load large model weights and can legitimately run for many
 # minutes, especially on first run — so we exempt them from the global limit.
 LIBRARY_TIMEOUTS: dict[str, int | None] = {
-    "marker":  None,
-    "docling": None,
+    "marker":          None,
+    "docling":         None,
+    "amazon_textract": None,  # network-bound; exempt from global timeout
 }
 
 # Extra environment variables injected into a library's subprocess.
@@ -87,12 +89,13 @@ LIBRARY_ENV: dict[str, dict[str, str]] = {
 _PKG_NAME: dict[str, str] = {
     "pdfplumber": "pdfplumber",
     "camelot":    "camelot-py",
-    "pymupdf":    "pymupdf",
+    "pymupdf4llm": "pymupdf4llm",
     "pdf_oxide":  "pdf-oxide",
     "pypdf":      "pypdf",
     "markitdown": "markitdown",
     "docling":    "docling",
-    "marker":     "marker-pdf",
+    "marker":          "marker-pdf",
+    "amazon_textract": "amazon-textract-textractor",
 }
 
 
