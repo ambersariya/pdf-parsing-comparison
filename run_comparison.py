@@ -66,6 +66,7 @@ LIBRARIES: dict[str, list[str]] = {
     "docling":          [sys.executable, "parsers/extract_with_docling.py",          "{pdf}", "-o", "{output}"],
     "marker":           [sys.executable, "parsers/extract_with_marker.py",           "{pdf}", "-o", "{output}"],
     "amazon_textract":  [sys.executable, "parsers/extract_with_amazon_textract.py",  "{pdf}", "-o", "{output}"],
+    "tesseract":        [sys.executable, "parsers/extract_with_tesseract.py",         "{pdf}", "-o", "{output}"],
 }
 
 # Per-library timeout overrides (seconds).  None = no timeout.
@@ -96,6 +97,7 @@ _PKG_NAME: dict[str, str] = {
     "docling":    "docling",
     "marker":          "marker-pdf",
     "amazon_textract": "amazon-textract-textractor",
+    "tesseract":       "pytesseract",
 }
 
 
@@ -128,6 +130,8 @@ def parse_args() -> argparse.Namespace:
                         help="Max parallel library runs per PDF. Defaults to number of libraries.")
     parser.add_argument("--baseline", type=Path, default=None, metavar="SUMMARY_JSON",
                         help="Path to a previous run's summary.json to diff results against.")
+    parser.add_argument("--include-images", action="store_true", default=False,
+                        help="Pass --include-images to amazon_textract (send pages with images intact).")
     return parser.parse_args()
 
 
@@ -899,6 +903,11 @@ def main() -> None:
 
     console.print(f"\nFound [bold]{len(pdf_paths)}[/] PDF(s) to process.")
     console.print(f"  [dim]Session dir:[/] {session_dir}\n")
+
+    if args.include_images:
+        for lib in ("amazon_textract", "tesseract"):
+            if lib in LIBRARIES:
+                LIBRARIES[lib] = LIBRARIES[lib] + ["--include-images"]
 
     all_runs: list[tuple[Path, list[dict]]] = []
 

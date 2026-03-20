@@ -16,6 +16,7 @@ dependencies = [
   "docling>=2.0.0",
   "marker-pdf>=1.0.0",
   "amazon-textract-textractor>=1.0.0",
+  "pytesseract>=0.3.10",
   "rich>=13.0.0",
 ]
 
