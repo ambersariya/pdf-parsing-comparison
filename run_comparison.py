@@ -65,8 +65,8 @@ LIBRARIES: dict[str, list[str]] = {
     "markitdown":  [sys.executable, "parsers/extract_with_markitdown.py",  "{pdf}", "-o", "{output}"],
     "docling":          [sys.executable, "parsers/extract_with_docling.py",          "{pdf}", "-o", "{output}"],
     "marker":           [sys.executable, "parsers/extract_with_marker.py",           "{pdf}", "-o", "{output}"],
-    "amazon_textract":  [sys.executable, "parsers/extract_with_amazon_textract.py",  "{pdf}", "-o", "{output}"],
-    "tesseract":        [sys.executable, "parsers/extract_with_tesseract.py",         "{pdf}", "-o", "{output}"],
+    "amazon_textract":  [sys.executable, "-m", "parsers.extract_with_amazon_textract",  "{pdf}", "-o", "{output}"],
+    "tesseract":        [sys.executable, "-m", "parsers.extract_with_tesseract",         "{pdf}", "-o", "{output}"],
 }
 
 # Per-library timeout overrides (seconds).  None = no timeout.
