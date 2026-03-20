@@ -15,6 +15,8 @@ Measures text quality, table detection, memory usage, CPU time, and wall-clock t
 | `extract_with_markitdown.py` | [MarkItDown](https://github.com/microsoft/markitdown) | Microsoft whole-document conversion |
 | `extract_with_docling.py` | [Docling](https://github.com/DS4SD/docling) | IBM deep layout analysis (ML) |
 | `extract_with_marker.py` | [Marker](https://github.com/VikParuchuri/marker) | ML-based PDF → Markdown (OCR + layout) |
+| `extract_with_amazon_textract.py` | [amazon-textract-textractor](https://github.com/aws-samples/amazon-textract-textractor) | AWS Textract API (LAYOUT + TABLES) |
+| `extract_with_tesseract.py` | [pytesseract](https://github.com/madmaze/pytesseract) + Tesseract | Local OCR with hOCR layout analysis |
 
 All parsers live in the `parsers/` package and share the same CLI:
 
@@ -25,15 +27,18 @@ python -m parsers.extract_with_<library> input.pdf -o output.md
 ## Setup
 
 Requires Python 3.11–3.x and [uv](https://docs.astral.sh/uv/).
-Camelot's lattice mode also requires [Ghostscript](https://www.ghostscript.com/) at the OS level.
+Some parsers have OS-level dependencies:
 
 ```bash
 # macOS
-brew install ghostscript
+brew install ghostscript   # required by camelot (lattice mode)
+brew install tesseract     # required by extract_with_tesseract
 
 # Install Python dependencies
 make install        # runs: uv sync
 ```
+
+**Amazon Textract** requires valid AWS credentials (environment variables, `~/.aws/credentials`, or an IAM role) and network access to the Textract API.
 
 ## Quick start
 
@@ -72,6 +77,12 @@ python run_comparison.py "docs/*.pdf"
 
 # Subset of libraries
 python run_comparison.py my.pdf --libraries pdfplumber camelot pymupdf
+
+# OCR-only libraries (scanned / rasterised PDFs)
+python run_comparison.py my.pdf --libraries amazon_textract tesseract
+
+# Send embedded images to Textract / Tesseract instead of blanking them out
+python run_comparison.py my.pdf --libraries amazon_textract tesseract --include-images
 
 # Custom output directory and concurrency cap
 python run_comparison.py "docs/*.pdf" --results-dir /tmp/runs --workers 2
@@ -136,12 +147,41 @@ results/
 ## Per-library behaviour notes
 
 **Timeout handling** — The global `--timeout` (default 300 s) applies to all parsers
-except `marker` and `docling`, which load large ML model weights and are exempt from
-the timeout.
+except `marker`, `docling`, and `amazon_textract`, which are exempt (ML weight loading
+and network-bound API calls can legitimately exceed the limit).
 
 **Apple Silicon (MPS)** — Marker runs with `PYTORCH_ENABLE_MPS_FALLBACK=1` to avoid
 `AcceleratorError` crashes on large documents caused by MPS sequence-length limits in
 Surya's attention layers. Operations unsupported by MPS fall back silently to CPU.
+
+## Amazon Textract options
+
+| Flag | Default | Description |
+|---|---|---|
+| `--region` | `eu-west-1` | AWS region for the Textract API |
+| `--dpi` | `200` | Page render resolution sent to Textract |
+| `--workers` | `20` | Concurrent Textract API calls (one per page) |
+| `--image-dir` | temp dir | Where to save extracted embedded images |
+| `--include-images` | off | Send pages with images intact (default: blanked out) |
+| `--page-marker` | `---\n\n` | Separator template between pages; supports `{page}` |
+
+## Tesseract options
+
+Requires `tesseract` system install (`brew install tesseract`) and `pytesseract`.
+
+| Flag | Default | Description |
+|---|---|---|
+| `--dpi` | `300` | Page render resolution (higher = better accuracy on small text) |
+| `--workers` | `4` | Parallel Tesseract processes (one per page) |
+| `--lang` | `eng` | Tesseract language code(s), e.g. `eng+fra` |
+| `--psm` | `3` | Page segmentation mode — `3` = auto (handles multi-column), `6` = single block |
+| `--min-confidence` | `30` | Drop OCR words below this confidence score (0–100) |
+| `--image-dir` | temp dir | Where to save extracted embedded images |
+| `--include-images` | off | Send pages with images intact (default: blanked out) |
+| `--page-marker` | `---\n\n` | Separator template between pages; supports `{page}` |
+
+The Tesseract parser uses hOCR output (not plain text) to infer markdown headings
+from line heights and de-hyphenate words split across column-width line breaks.
 
 ## Test fixtures
 

@@ -25,13 +25,12 @@ import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import pdfplumber
-import pypdfium2 as pdfium
-from PIL import Image, ImageDraw
-from pypdf import PdfReader
+from PIL import Image
 from textractor import Textractor
 from textractor.data.constants import TextractFeatures
 from textractor.data.markdown_linearization_config import MarkdownLinearizationConfig
+
+from parsers.pdf_rendering_utils import render_pages, save_embedded_images
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,8 +58,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workers",
         type=int,
-        default=4,
-        help="Number of parallel Textract workers (default: 4)",
+        default=20,
+        help="Number of parallel Textract workers (default: 20)",
     )
     parser.add_argument(
         "--dpi",
@@ -84,67 +83,16 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _save_embedded_images(pdf_path: Path, image_dir: Path) -> None:
-    """Extract all embedded images from the PDF and write them to image_dir."""
-    reader = PdfReader(str(pdf_path))
-    for page_index, page in enumerate(reader.pages):
-        page_number = page_index + 1
-        for img_index, img in enumerate(page.images):
-            # img.name already carries an extension (e.g. 'Im0.png')
-            stem = Path(img.name).stem
-            suffix = Path(img.name).suffix or ".bin"
-            out_path = image_dir / f"page{page_number:04d}_img{img_index + 1:04d}_{stem}{suffix}"
-            out_path.write_bytes(img.data)
-
-
-def _render_pages(pdf_path: Path, dpi: int, blank_images: bool) -> list[Image.Image]:
-    """
-    Render each PDF page to a PIL image.
-
-    When blank_images is True, embedded image areas are painted white before
-    the page is returned (pdfplumber supplies bounding boxes in PDF point
-    coordinates with a bottom-left origin, which are converted to pixels).
-    """
-    scale = dpi / 72.0
-    pdfium_doc = pdfium.PdfDocument(str(pdf_path))
-    rendered: list[Image.Image] = []
-
-    with pdfplumber.open(str(pdf_path)) as plumber_pdf:
-        for page_index, plumber_page in enumerate(plumber_pdf.pages):
-            pdfium_page = pdfium_doc[page_index]
-            bitmap = pdfium_page.render(scale=float(scale))  # type: ignore[arg-type]
-            pil_img = bitmap.to_pil()
-
-            if blank_images and plumber_page.images:
-                page_height_pts = plumber_page.height
-                draw = ImageDraw.Draw(pil_img)
-                for img_info in plumber_page.images:
-                    x0 = int(img_info["x0"] * scale)
-                    y0 = int((page_height_pts - img_info["y1"]) * scale)
-                    x1 = int(img_info["x1"] * scale)
-                    y1 = int((page_height_pts - img_info["y0"]) * scale)
-                    draw.rectangle([x0, y0, x1, y1], fill="white")
-
-            rendered.append(pil_img)
-
-    pdfium_doc.close()
-    return rendered
-
-
 def _analyze_page(
     extractor: Textractor,
     page_index: int,
     img: Image.Image,
-    page_marker: str,
 ) -> tuple[int, str]:
     document = extractor.analyze_document(
         file_source=img,
         features=[TextractFeatures.LAYOUT, TextractFeatures.TABLES],
     )
-    page_text = document.get_text(config=MarkdownLinearizationConfig())
-    page_number = page_index + 1
-    marker = page_marker.format(page=page_number) if page_marker else ""
-    return page_index, marker + page_text
+    return page_index, document.get_text(config=MarkdownLinearizationConfig())
 
 
 def extract_pdf(
@@ -168,24 +116,24 @@ def extract_pdf(
     else:
         image_dir.mkdir(parents=True, exist_ok=True)
 
-    # Extract embedded images to disk
-    _save_embedded_images(pdf_path, image_dir)
-
-    # Render pages, optionally blanking image areas (not thread-safe, do sequentially)
-    images = _render_pages(pdf_path, dpi, blank_images=not include_images)
+    save_embedded_images(pdf_path, image_dir)
+    images = render_pages(pdf_path, dpi, blank_images=not include_images)
 
     extractor = Textractor(region_name=region)
     results: dict[int, str] = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(_analyze_page, extractor, i, img, page_marker): i
+            pool.submit(_analyze_page, extractor, i, img): i
             for i, img in enumerate(images)
         }
         for future in as_completed(futures):
             page_index, page_text = future.result()
             results[page_index] = page_text
 
-    pages = [results[i] for i in range(len(images))]
+    pages = [
+        (page_marker.format(page=i + 1) if page_marker else "") + results[i]
+        for i in range(len(images))
+    ]
     return "\n".join(pages).strip() + "\n", image_dir
 
 

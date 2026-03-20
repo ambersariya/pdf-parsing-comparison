@@ -6,8 +6,8 @@ Each page is rendered to a PNG image (via pypdfium2) and passed to Tesseract.
 Embedded images are extracted and saved to a temp directory; their areas can
 optionally be blanked out before OCR (default behaviour).
 
-The page rendering and image-blanking pipeline mirrors extract_with_amazon_textract.py;
-only the OCR step differs.
+The page rendering and image-blanking pipeline is shared with
+extract_with_amazon_textract via parsers/pdf_rendering_utils.py.
 
 Requirements:
   - tesseract  (system install, e.g. `brew install tesseract`)
@@ -25,11 +25,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-import pdfplumber
-import pypdfium2 as pdfium
 import pytesseract
-from PIL import Image, ImageDraw, ImageEnhance, ImageFilter
-from pypdf import PdfReader
+from PIL import Image, ImageEnhance, ImageFilter
+
+from parsers.pdf_rendering_utils import render_pages, save_embedded_images
 
 
 def parse_args() -> argparse.Namespace:
@@ -96,56 +95,13 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _save_embedded_images(pdf_path: Path, image_dir: Path) -> None:
-    """Extract all embedded images from the PDF and write them to image_dir."""
-    reader = PdfReader(str(pdf_path))
-    for page_index, page in enumerate(reader.pages):
-        page_number = page_index + 1
-        for img_index, img in enumerate(page.images):
-            stem = Path(img.name).stem
-            suffix = Path(img.name).suffix or ".bin"
-            out_path = image_dir / f"page{page_number:04d}_img{img_index + 1:04d}_{stem}{suffix}"
-            out_path.write_bytes(img.data)
-
-
-def _render_pages(pdf_path: Path, dpi: int, blank_images: bool) -> list[Image.Image]:
-    """
-    Render each PDF page to a PIL image.
-
-    When blank_images is True, embedded image areas are painted white before
-    the page is returned (pdfplumber supplies bounding boxes in PDF point
-    coordinates with a bottom-left origin, which are converted to pixels).
-    """
-    scale = dpi / 72.0
-    pdfium_doc = pdfium.PdfDocument(str(pdf_path))
-    rendered: list[Image.Image] = []
-
-    with pdfplumber.open(str(pdf_path)) as plumber_pdf:
-        for page_index, plumber_page in enumerate(plumber_pdf.pages):
-            pdfium_page = pdfium_doc[page_index]
-            bitmap = pdfium_page.render(scale=float(scale))  # type: ignore[arg-type]
-            pil_img = bitmap.to_pil()
-
-            if blank_images and plumber_page.images:
-                page_height_pts = plumber_page.height
-                draw = ImageDraw.Draw(pil_img)
-                for img_info in plumber_page.images:
-                    x0 = int(img_info["x0"] * scale)
-                    y0 = int((page_height_pts - img_info["y1"]) * scale)
-                    x1 = int(img_info["x1"] * scale)
-                    y1 = int((page_height_pts - img_info["y0"]) * scale)
-                    draw.rectangle([x0, y0, x1, y1], fill="white")
-
-            rendered.append(pil_img)
-
-    pdfium_doc.close()
-    return rendered
-
+# ---------------------------------------------------------------------------
+# Image pre-processing
+# ---------------------------------------------------------------------------
 
 def _otsu_threshold(img: Image.Image) -> int:
     """Compute Otsu's binarisation threshold from a greyscale PIL image."""
-    # histogram() returns a 256-element count list for mode "L"
-    hist = img.histogram()
+    hist = img.histogram()  # 256-element count list for mode "L"
     total = sum(hist)
     sum_all = sum(i * hist[i] for i in range(256))
 
@@ -174,17 +130,17 @@ def _preprocess(img: Image.Image) -> Image.Image:
       2. Sharpen edges
       3. Boost contrast (2×)
       4. Otsu binarisation → clean black-on-white bitmap
-
-    These steps reduce noise and improve recognition accuracy, especially on
-    scanned or low-contrast PDFs.
     """
     img = img.convert("L")
     img = img.filter(ImageFilter.SHARPEN)
     img = ImageEnhance.Contrast(img).enhance(2.0)
-    threshold = _otsu_threshold(img)
-    img = img.point(lambda p: 255 if p >= threshold else 0)
+    img = img.point(lambda p: 255 if p >= _otsu_threshold(img) else 0)
     return img
 
+
+# ---------------------------------------------------------------------------
+# hOCR parsing
+# ---------------------------------------------------------------------------
 
 def _bbox_height(title: str) -> int:
     """Parse the pixel height of a bbox from an hOCR title attribute."""
@@ -223,15 +179,21 @@ def _hocr_to_markdown(hocr_bytes: bytes, min_conf: int = 30) -> str:
     except ET.ParseError:
         return re.sub(r"<[^>]+>", " ", xml)
 
-    # Body-text baseline from all line heights (25th-percentile)
-    all_heights = [
-        _bbox_height(line.get("title", ""))
-        for line in _iter_class(root, "ocr_line")
-    ]
-    all_heights = sorted(h for h in all_heights if h > 0)
+    # Single pass: collect all line heights and cache per element so paragraphs
+    # can look them up without re-scanning the tree.
+    line_height_cache: dict[ET.Element, int] = {}
+    all_heights: list[int] = []
+    for line in _iter_class(root, "ocr_line"):
+        h = _bbox_height(line.get("title", ""))
+        if h > 0:
+            line_height_cache[line] = h
+            all_heights.append(h)
+
     if not all_heights:
         return ""
-    body_height = all_heights[len(all_heights) // 4]
+
+    all_heights.sort()
+    body_height = all_heights[len(all_heights) // 4]  # 25th-percentile baseline
 
     paragraphs: list[str] = []
     for par in _iter_class(root, "ocr_par"):
@@ -239,8 +201,7 @@ def _hocr_to_markdown(hocr_bytes: bytes, min_conf: int = 30) -> str:
         if not lines:
             continue
 
-        # Collect confident words line-by-line (preserving line boundaries
-        # so we can detect hyphenation at line ends)
+        # Collect confident words line-by-line to enable de-hyphenation
         line_words: list[list[str]] = []
         for line in lines:
             words = []
@@ -267,9 +228,8 @@ def _hocr_to_markdown(hocr_bytes: bytes, min_conf: int = 30) -> str:
         if not text:
             continue
 
-        # Heading classification by average line height
-        heights = [_bbox_height(l.get("title", "")) for l in lines]
-        heights = [h for h in heights if h > 0]
+        # Reuse cached line heights — no second tree scan needed
+        heights = [line_height_cache[l] for l in lines if l in line_height_cache]
         avg = sum(heights) / len(heights) if heights else 0
 
         if avg >= body_height * 1.6:
@@ -284,10 +244,13 @@ def _hocr_to_markdown(hocr_bytes: bytes, min_conf: int = 30) -> str:
     return "\n\n".join(paragraphs)
 
 
+# ---------------------------------------------------------------------------
+# Per-page OCR
+# ---------------------------------------------------------------------------
+
 def _analyze_page(
     page_index: int,
     img: Image.Image,
-    page_marker: str,
     lang: str,
     psm: int,
     min_conf: int,
@@ -295,11 +258,12 @@ def _analyze_page(
     img = _preprocess(img)
     config = f"--oem 1 --psm {psm}"
     hocr = pytesseract.image_to_pdf_or_hocr(img, lang=lang, config=config, extension="hocr")
-    page_text = _hocr_to_markdown(hocr, min_conf=min_conf)
-    page_number = page_index + 1
-    marker = page_marker.format(page=page_number) if page_marker else ""
-    return page_index, marker + page_text.strip()
+    return page_index, _hocr_to_markdown(hocr, min_conf=min_conf)
 
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def extract_pdf(
     pdf_path: Path,
@@ -324,22 +288,23 @@ def extract_pdf(
     else:
         image_dir.mkdir(parents=True, exist_ok=True)
 
-    _save_embedded_images(pdf_path, image_dir)
-
-    # Render pages sequentially (pypdfium2 is not thread-safe)
-    images = _render_pages(pdf_path, dpi, blank_images=not include_images)
+    save_embedded_images(pdf_path, image_dir)
+    images = render_pages(pdf_path, dpi, blank_images=not include_images)
 
     results: dict[int, str] = {}
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {
-            pool.submit(_analyze_page, i, img, page_marker, lang, psm, min_conf): i
+            pool.submit(_analyze_page, i, img, lang, psm, min_conf): i
             for i, img in enumerate(images)
         }
         for future in as_completed(futures):
             page_index, page_text = future.result()
             results[page_index] = page_text
 
-    pages = [results[i] for i in range(len(images))]
+    pages = [
+        (page_marker.format(page=i + 1) if page_marker else "") + results[i].strip()
+        for i in range(len(images))
+    ]
     return "\n".join(pages).strip() + "\n", image_dir
 
 
