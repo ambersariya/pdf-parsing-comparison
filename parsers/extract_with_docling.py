@@ -10,15 +10,19 @@ OCR is performed by Tesseract (system install required) when pages have no
 extractable text layer. Processing is CPU-only for portability on EKS.
 
 Memory efficiency options:
-  --batch-pages N   Process N pages at a time (default: 0 = all at once).
-                    Each batch is discarded after export, capping peak RSS
-                    regardless of document length.
-  --threads N       CPU inference threads (default: 4). Lower values reduce
-                    parallel memory pressure at the cost of speed.
+  --batch-pages N        Process N pages at a time (default: 0 = all at once).
+                         Each batch is discarded after export, capping peak RSS
+                         regardless of document length.
+  --parallel-batches N   How many batches to run concurrently (default: 1).
+                         Models are shared across threads; only meaningful when
+                         --batch-pages is also set. Trades memory for speed.
+  --threads N            CPU inference threads per model (default: 4). Lower
+                         values reduce parallel memory pressure.
 """
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from pypdf import PdfReader
@@ -71,6 +75,14 @@ def parse_args() -> argparse.Namespace:
         default=0,
         metavar="N",
         help="Process N pages per batch to cap peak memory (default: 0 = all at once).",
+    )
+    parser.add_argument(
+        "--parallel-batches",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Batches to run concurrently (default: 1 = sequential). "
+             "Models are shared across threads. Only meaningful with --batch-pages.",
     )
     parser.add_argument(
         "--threads",
@@ -131,6 +143,7 @@ def extract_pdf(
     table_mode: str = "accurate",
     page_marker: str = "---\n\n",
     batch_pages: int = 0,
+    parallel_batches: int = 1,
     threads: int = 4,
     artifacts_path: Path | None = None,
 ) -> str:
@@ -141,12 +154,22 @@ def extract_pdf(
         text = _export(result, page_marker)
     else:
         total = len(PdfReader(pdf_path).pages)
-        parts: list[str] = []
-        for start in range(1, total + 1, batch_pages):
-            end = min(start + batch_pages - 1, total)
-            result = converter.convert(str(pdf_path), page_range=(start, end))
-            parts.append(_export(result, page_marker).strip())
-        text = ("\n" + page_marker).join(p for p in parts if p)
+        ranges = [
+            (start, min(start + batch_pages - 1, total))
+            for start in range(1, total + 1, batch_pages)
+        ]
+
+        ordered: dict[int, str] = {}
+        with ThreadPoolExecutor(max_workers=max(1, parallel_batches)) as pool:
+            futures = {
+                pool.submit(converter.convert, str(pdf_path), page_range=r): i
+                for i, r in enumerate(ranges)
+            }
+            for future in as_completed(futures):
+                i = futures[future]
+                ordered[i] = _export(future.result(), page_marker).strip()
+
+        text = ("\n" + page_marker).join(ordered[i] for i in range(len(ranges)) if ordered[i])
 
     return text.strip() + "\n"
 
@@ -159,6 +182,7 @@ def main() -> None:
         table_mode=args.table_mode,
         page_marker=args.page_marker,
         batch_pages=args.batch_pages,
+        parallel_batches=args.parallel_batches,
         threads=args.threads,
         artifacts_path=args.artifacts_path,
     )
