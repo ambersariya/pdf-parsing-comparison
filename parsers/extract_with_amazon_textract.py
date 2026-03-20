@@ -15,6 +15,7 @@ Requirements:
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import pypdfium2 as pdfium
@@ -41,9 +42,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--page-marker",
-        default="",
+        default="---\n\n## Page {page}\n\n",
         metavar="TEMPLATE",
-        help="Template inserted before each page, e.g. '--- Page {page} ---\\n'",
+        help="Template inserted before each page (default: '--- Page {page}')",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Number of parallel Textract workers (default: 4)",
     )
     parser.add_argument(
         "--dpi",
@@ -54,37 +61,49 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _analyze_page(extractor: Textractor, page_index: int, img, page_marker: str) -> tuple[int, str]:
+    document = extractor.analyze_document(
+        file_source=img,
+        features=[TextractFeatures.LAYOUT, TextractFeatures.TABLES],
+    )
+    page_text = document.get_text(config=MarkdownLinearizationConfig())
+    page_number = page_index + 1
+    marker = page_marker.format(page=page_number) if page_marker else ""
+    return page_index, marker + page_text
+
+
 def extract_pdf(
     pdf_path: Path,
     region: str = "us-east-1",
-    page_marker: str = "",
+    page_marker: str = "---\n\n## Page {page}\n\n",
     dpi: int = 200,
+    workers: int = 4,
 ) -> str:
     extractor = Textractor(region_name=region)
 
     doc = pdfium.PdfDocument(str(pdf_path))
     scale = dpi / 72  # pdfium native resolution is 72 DPI
-    rendered_pages: list[str] = []
 
+    # Render all pages upfront (pdfium is not thread-safe)
+    images = []
     for page_index in range(len(doc)):
         page = doc[page_index]
         bitmap = page.render(scale=float(scale))  # type: ignore[arg-type]
-        img = bitmap.to_pil()
-
-        document = extractor.analyze_document(
-            file_source=img,
-            features=[TextractFeatures.LAYOUT, TextractFeatures.TABLES],
-        )
-        page_text = document.get_text(config=MarkdownLinearizationConfig())
-
-        page_number = page_index + 1
-        if page_marker:
-            rendered_pages.append(page_marker.format(page=page_number) + page_text)
-        else:
-            rendered_pages.append(page_text)
-
+        images.append(bitmap.to_pil())
     doc.close()
-    return "\n".join(rendered_pages).strip() + "\n"
+
+    results: dict[int, str] = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {
+            pool.submit(_analyze_page, extractor, i, img, page_marker): i
+            for i, img in enumerate(images)
+        }
+        for future in as_completed(futures):
+            page_index, page_text = future.result()
+            results[page_index] = page_text
+
+    pages = [results[i] for i in range(len(images))]
+    return "\n".join(pages).strip() + "\n"
 
 
 def main() -> None:
@@ -94,6 +113,7 @@ def main() -> None:
         region=args.region,
         page_marker=args.page_marker,
         dpi=args.dpi,
+        workers=args.workers,
     )
 
     if args.output:
