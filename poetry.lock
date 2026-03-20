@@ -260,7 +260,6 @@ description = "PDF Table Extraction for Humans."
 optional = false
 python-versions = "*"
 groups = ["main"]
-markers = "python_version == \"3.11\""
 files = [
     {file = "camelot-py-0.11.0.tar.gz", hash = "sha256:97a7d906d685e4059a4a549a63ae3a51f0ab72a3c826557f8443c65a1181dfe6"},
     {file = "camelot_py-0.11.0-py3-none-any.whl", hash = "sha256:96d0f0386c8993f8f6b0aaaddf5f14a4a6ec6e9d1e07b6128d1c3abfa9156683"},
@@ -285,37 +284,6 @@ base = ["ghostscript (>=0.7)", "opencv-python (>=3.4.2.17)", "pdftopng (>=0.2.3)
 cv = ["ghostscript (>=0.7)", "opencv-python (>=3.4.2.17)", "pdftopng (>=0.2.3)"]
 dev = ["Sphinx (>=3.1.2)", "codecov (>=2.0.15)", "ghostscript (>=0.7)", "matplotlib (>=2.2.3)", "opencv-python (>=3.4.2.17)", "pdftopng (>=0.2.3)", "pytest (>=5.4.3)", "pytest-cov (>=2.10.0)", "pytest-mpl (>=0.11)", "pytest-runner (>=5.2)", "sphinx-autobuild (>=2021.3.14)"]
 plot = ["matplotlib (>=2.2.3)"]
-
-[[package]]
-name = "camelot-py"
-version = "1.0.9"
-description = "PDF Table Extraction for Humans."
-optional = false
-python-versions = ">=3.8"
-groups = ["main"]
-markers = "python_version >= \"3.12\""
-files = [
-    {file = "camelot_py-1.0.9-py3-none-any.whl", hash = "sha256:f4c78dc5eef879040219ee9cb8b0caeab6b95d52128eec96f6e0ae94fdd910fb"},
-    {file = "camelot_py-1.0.9.tar.gz", hash = "sha256:d43d88766f7c3462803ff11464e7d3d15a9223e845972de2b61ef7c3f62d3200"},
-]
-
-[package.dependencies]
-chardet = ">=5.1.0"
-click = ">=8.0.1"
-numpy = {version = ">=1.26.1", markers = "python_version >= \"3.12\""}
-opencv-python-headless = ">=4.7.0.68"
-openpyxl = ">=3.1.0"
-pandas = {version = ">=2.2.2", markers = "python_version >= \"3.10\""}
-pdfminer-six = ">=20240706"
-pillow = ">=10.4.0"
-pypdf = {version = ">=4.0,<6.0", markers = "python_version >= \"3.12\""}
-pypdfium2 = ">=4"
-tabulate = ">=0.9.0"
-
-[package.extras]
-dev = ["Pygments (>=2.10.0)", "black (>=23.1.0)", "build", "coverage[toml] (>=6.2)", "flake8 (>=4.0.1)", "flake8-bandit (>=2.1.2)", "flake8-bugbear (>=21.9.2)", "flake8-rst-docstrings (>=0.2.5)", "isort (>=5.10.1)", "mypy (>=0.930)", "myst-parser (>=2.0.0)", "nox (>=2024.10.9)", "pep8-naming (>=0.12.1)", "pre-commit (>=2.16.0)", "pre-commit-hooks (>=4.1.0)", "pytest (>=6.2.5)", "pytest-mpl (>=0.17.0)", "pyupgrade (>=2.29.1)", "safety (>=2.2.3)", "sphinx (>=4.3.2)", "sphinx-autobuild (>=2021.3.14)", "sphinx-book-theme (>=1.0.1)", "sphinx-click (>=3.0.2)", "sphinx-copybutton (>=0.5.0)", "sphinx-prompt (>=1.5.0)", "twine", "typeguard (>=2.13.3)", "xdoctest[colors] (>=0.15.10)"]
-ghostscript = ["ghostscript (>=0.7)"]
-plot = ["matplotlib (>=3.7.5) ; python_version < \"3.12\"", "matplotlib (>=3.8.0) ; python_version >= \"3.12\""]
 
 [[package]]
 name = "certifi"
@@ -1240,7 +1208,6 @@ description = "Interface to the Ghostscript C-API, both high- and low-level, bas
 optional = false
 python-versions = "*"
 groups = ["main"]
-markers = "python_version == \"3.11\""
 files = [
     {file = "ghostscript-0.8.1-py3-none-any.whl", hash = "sha256:a801d1f0e3321d87c394d8c8f7d38e413692474c8a5cab7673b1b7f3a2c4b811"},
     {file = "ghostscript-0.8.1.tar.gz", hash = "sha256:7cfa85d201036bf87890e425b4a0cdc9749abc4670a4492ae2aa66ad792b1388"},
@@ -1890,9 +1857,9 @@ files = [
 [package.dependencies]
 click = ">=8.1.7"
 numpy = [
+    {version = ">=1.24", markers = "python_version < \"3.12\""},
     {version = ">=1.26", markers = "python_version == \"3.12\""},
     {version = ">=2.1.0", markers = "python_version >= \"3.13\""},
-    {version = ">=1.24", markers = "python_version < \"3.12\""},
 ]
 onnxruntime = [
     {version = ">=1.17.0,<=1.20.1", markers = "sys_platform == \"win32\" and python_version > \"3.9\""},
@@ -3018,8 +2985,8 @@ files = [
 
 [package.dependencies]
 numpy = [
+    {version = ">=1.23.5", markers = "python_version >= \"3.11\""},
     {version = ">=1.26.0", markers = "python_version >= \"3.12\""},
-    {version = ">=1.23.5", markers = "python_version == \"3.11\""},
 ]
 
 [[package]]
@@ -3219,7 +3186,6 @@ description = "A PDF to PNG conversion library."
 optional = false
 python-versions = "*"
 groups = ["main"]
-markers = "python_version == \"3.11\""
 files = [
     {file = "pdftopng-0.2.4-cp310-cp310-macosx_14_0_arm64.whl", hash = "sha256:aef365311ad3d004f168fd073b649c56c3751b1eaeb244435e3d030f203a8843"},
     {file = "pdftopng-0.2.4-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:adabef595cfc92ded5702321424e7ecb93e4b60ab4772b11cd95d3693374441f"},
@@ -3926,33 +3892,11 @@ pyobjc-framework-Quartz = ">=12.1"
 
 [[package]]
 name = "pypdf"
-version = "5.9.0"
-description = "A pure-python PDF library capable of splitting, merging, cropping, and transforming PDF files"
-optional = false
-python-versions = ">=3.8"
-groups = ["main"]
-markers = "python_version >= \"3.12\""
-files = [
-    {file = "pypdf-5.9.0-py3-none-any.whl", hash = "sha256:be10a4c54202f46d9daceaa8788be07aa8cd5ea8c25c529c50dd509206382c35"},
-    {file = "pypdf-5.9.0.tar.gz", hash = "sha256:30f67a614d558e495e1fbb157ba58c1de91ffc1718f5e0dfeb82a029233890a1"},
-]
-
-[package.extras]
-crypto = ["cryptography"]
-cryptodome = ["PyCryptodome"]
-dev = ["black", "flit", "pip-tools", "pre-commit", "pytest-cov", "pytest-socket", "pytest-timeout", "pytest-xdist", "wheel"]
-docs = ["myst_parser", "sphinx", "sphinx_rtd_theme"]
-full = ["Pillow (>=8.0.0)", "cryptography"]
-image = ["Pillow (>=8.0.0)"]
-
-[[package]]
-name = "pypdf"
 version = "6.9.1"
 description = "A pure-python PDF library capable of splitting, merging, cropping, and transforming PDF files"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
-markers = "python_version == \"3.11\""
 files = [
     {file = "pypdf-6.9.1-py3-none-any.whl", hash = "sha256:f35a6a022348fae47e092a908339a8f3dc993510c026bb39a96718fc7185e89f"},
     {file = "pypdf-6.9.1.tar.gz", hash = "sha256:ae052407d33d34de0c86c5c729be6d51010bf36e03035a8f23ab449bca52377d"},
